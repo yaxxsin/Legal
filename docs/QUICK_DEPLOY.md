@@ -50,7 +50,30 @@ docker compose -f docker-compose.prod.yml build
 docker compose -f docker-compose.prod.yml up -d
 ```
 
-## 5. Verify
+## 5. Migrate & Seed Database
+```bash
+# Buat tabel dari schema (project ini belum pakai migration files)
+docker exec lc-api npx prisma db push
+
+# Main seed (categories, sectors, feature flags)
+docker exec lc-api npx prisma db seed
+
+# Compliance rules
+docker exec lc-api npx ts-node --compiler-options '{"module":"CommonJS"}' prisma/seed-rules.ts
+
+# Article content
+docker exec lc-api npx ts-node --compiler-options '{"module":"CommonJS"}' prisma/seed-articles.ts
+
+# Document templates
+docker exec lc-api npx ts-node --compiler-options '{"module":"CommonJS"}' prisma/seed-documents.ts
+
+# CMS data
+docker exec lc-api npx ts-node --compiler-options '{"module":"CommonJS"}' prisma/seed-cms.ts
+```
+
+> 💡 Semua seed menggunakan `upsert` — aman dijalankan ulang tanpa duplikasi.
+
+## 6. Verify
 ```bash
 # Semua container running?
 docker compose -f docker-compose.prod.yml ps
@@ -91,7 +114,7 @@ cat backup.sql | docker exec -i lc-postgres psql -U postgres -p 4582 localcompli
 |---------|-----|
 | 502/504 error | `docker logs lc-api` — cek API crash |
 | Tunnel disconnect | `systemctl status cloudflared` — cek service |
-| DB migration fail | `docker exec lc-api npx prisma migrate deploy` |
+| DB schema/table missing | `docker exec lc-api npx prisma db push` |
 | Rebuild bersih | `docker compose -f docker-compose.prod.yml build --no-cache` |
 
 > 📖 Detail lengkap: `docs/DEPLOYMENT.md`

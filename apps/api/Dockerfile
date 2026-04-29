@@ -40,5 +40,5 @@ WORKDIR /app/apps/api
 
 EXPOSE 4581
 
-# Run migrations then start
-CMD ["sh", "-c", "npx prisma migrate deploy && node dist/main.js"]
+# Sync schema to DB then start (no migration files in this project)
+CMD ["sh", "-c", "npx prisma db push --skip-generate && node dist/main.js"]
