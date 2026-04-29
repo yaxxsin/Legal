@@ -17,6 +17,9 @@ RUN pnpm install --frozen-lockfile
 # Default to relative path for production (Cloudflare Tunnel proxy mode)
 ARG NEXT_PUBLIC_API_URL=/api/v1
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+# Rewrites destination is baked at build time — must match prod API URL
+ARG INTERNAL_API_URL=http://api:4581
+ENV INTERNAL_API_URL=$INTERNAL_API_URL
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter web build
 
