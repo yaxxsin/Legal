@@ -1,0 +1,148 @@
+# ============================================
+# LocalCompliance — Production Docker Compose
+# Proxmox + Docker + Cloudflare Tunnel
+# All ports use non-standard range (458x) to avoid conflicts
+# Usage: docker compose -f docker-compose.prod.yml up -d
+# ============================================
+# Port Map:
+#   Web (FE)       → 4580 (internal & host)
+#   API            → 4581 (internal only, no host expose)
+#   PostgreSQL     → 4582 (internal only)
+#   Redis          → 4583 (internal only)
+#   MinIO API      → 4584 (internal only)
+#   MinIO Console  → 4585 (internal only)
+# ============================================
+
+services:
+  # ── PostgreSQL 16 ─────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: lc-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-localcompliance}
+    # Override default port inside container
+    command: -p 4582
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # NO ports exposed to host — only accessible within Docker network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -p 4582"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  # ── Redis 7 (BullMQ queue) ────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: lc-redis
+    restart: unless-stopped
+    command: redis-server --port 4583 --requirepass ${REDIS_PASSWORD:-redispass}
+    # NO ports exposed to host
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "4583", "-a", "${REDIS_PASSWORD:-redispass}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  # ── MinIO (S3-compatible storage) ─────────
+  minio:
+    image: minio/minio:latest
+    container_name: lc-minio
+    restart: unless-stopped
+    command: server /data --address ":4584" --console-address ":4585"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    volumes:
+      - miniodata:/data
+    # NO ports exposed to host
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  # ── NestJS API ────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: lc-api
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:4582/${POSTGRES_DB:-localcompliance}
+      API_PORT: "4581"
+      CORS_ORIGIN: ${CORS_ORIGIN:-https://yourdomain.com}
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env (min 32 chars)}
+      JWT_EXPIRATION: ${JWT_EXPIRATION:-1h}
+      JWT_REFRESH_EXPIRATION: ${JWT_REFRESH_EXPIRATION:-30d}
+      REDIS_HOST: redis
+      REDIS_PORT: "4583"
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redispass}
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redispass}@redis:4583
+      MINIO_ENDPOINT: minio
+      MINIO_PORT: "4584"
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: localcompliance
+      MINIO_USE_SSL: "false"
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5}
+      PASAL_API_URL: ${PASAL_API_URL:-https://pasal.id/api/v1}
+      PASAL_API_TOKEN: ${PASAL_API_TOKEN}
+    # NO ports exposed to host — only accessible via internal network (web proxies to it)
+    networks:
+      - internal
+
+  # ── Next.js Frontend ─────────────────────
+  # ONLY this service is exposed — Cloudflare Tunnel connects here
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Build-time: use relative path so browser calls go through Next.js proxy
+        NEXT_PUBLIC_API_URL: /api/v1
+    container_name: lc-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      # Runtime env
+      NEXT_PUBLIC_API_URL: /api/v1
+      INTERNAL_API_URL: http://api:4581
+      NODE_ENV: production
+      PORT: "4580"
+      HOSTNAME: "0.0.0.0"
+    ports:
+      - "4580:4580"
+    networks:
+      - internal
+
+  # ── Cloudflare Tunnel ─────────────────────
+  # cloudflared sudah terpasang di server (bukan Docker)
+  # Config di Zero Trust Dashboard:
+  #   Public Hostname → http://localhost:4580
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  pgdata:
+  miniodata:
